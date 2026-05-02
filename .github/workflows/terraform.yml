@@ -17,6 +17,8 @@ env:
   AWS_REGION: us-east-1
   AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
   TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+  # Optional: if network state is not at network/terraform.tfstate, set this secret to the S3 key (e.g. envs/network.tfstate).
+  TF_NETWORK_STATE_KEY: ${{ secrets.TF_NETWORK_STATE_KEY }}
 
 jobs:
   terraform-plan:
@@ -68,9 +70,28 @@ jobs:
             -backend-config="region=${AWS_REGION}"
         shell: bash
 
+      - name: Assert network state exists in S3 (dev/qa)
+        if: matrix.environment != 'network'
+        run: |
+          NET_KEY="${TF_NETWORK_STATE_KEY:-network/terraform.tfstate}"
+          echo "Expecting network remote state at s3://${TF_STATE_BUCKET}/${NET_KEY}"
+          if ! aws s3api head-object --bucket "${TF_STATE_BUCKET}" --key "${NET_KEY}" >/dev/null 2>&1; then
+            echo "::error::No Terraform state for the network stack at s3://${TF_STATE_BUCKET}/${NET_KEY}."
+            echo "Apply network once so remote state exists, then re-run this workflow."
+            echo "Example (after init with the same backend bucket/key): cd environments/network && terraform apply"
+            exit 1
+          fi
+        shell: bash
+
       - name: Write ci.auto.tfvars (dev/qa)
         if: matrix.environment != 'network'
-        run: printf 'terraform_state_bucket = "%s"\n' "${TF_STATE_BUCKET}" > ci.auto.tfvars
+        run: |
+          {
+            printf 'terraform_state_bucket = "%s"\n' "${TF_STATE_BUCKET}"
+            if [ -n "${TF_NETWORK_STATE_KEY}" ]; then
+              printf 'network_state_key = "%s"\n' "${TF_NETWORK_STATE_KEY}"
+            fi
+          } > ci.auto.tfvars
         shell: bash
 
       - name: Terraform validate

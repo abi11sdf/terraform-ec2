@@ -17,7 +17,7 @@ env:
   AWS_REGION: us-east-1
   AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
   TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
-  # Optional: if network state is not at network/terraform.tfstate, set this secret to the S3 key (e.g. envs/network.tfstate).
+  # Optional: if network state is not at network/terraform.tfstate, set this secret to the S3 key.
   TF_NETWORK_STATE_KEY: ${{ secrets.TF_NETWORK_STATE_KEY }}
 
 jobs:
@@ -70,21 +70,22 @@ jobs:
             -backend-config="region=${AWS_REGION}"
         shell: bash
 
-      - name: Assert network state exists in S3 (dev/qa)
+      - name: Check network remote state (dev/qa)
         if: matrix.environment != 'network'
+        id: network_state
         run: |
           NET_KEY="${TF_NETWORK_STATE_KEY:-network/terraform.tfstate}"
           echo "Expecting network remote state at s3://${TF_STATE_BUCKET}/${NET_KEY}"
-          if ! aws s3api head-object --bucket "${TF_STATE_BUCKET}" --key "${NET_KEY}" >/dev/null 2>&1; then
-            echo "::error::No Terraform state for the network stack at s3://${TF_STATE_BUCKET}/${NET_KEY}."
-            echo "Apply network once so remote state exists, then re-run this workflow."
-            echo "Example (after init with the same backend bucket/key): cd environments/network && terraform apply"
-            exit 1
+          if aws s3api head-object --bucket "${TF_STATE_BUCKET}" --key "${NET_KEY}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No Terraform state for network at s3://${TF_STATE_BUCKET}/${NET_KEY}. Skipping dev/qa plan until network is applied."
           fi
         shell: bash
 
       - name: Write ci.auto.tfvars (dev/qa)
-        if: matrix.environment != 'network'
+        if: matrix.environment != 'network' && steps.network_state.outputs.exists == 'true'
         run: |
           {
             printf 'terraform_state_bucket = "%s"\n' "${TF_STATE_BUCKET}"
@@ -95,10 +96,17 @@ jobs:
         shell: bash
 
       - name: Terraform validate
+        if: matrix.environment == 'network' || steps.network_state.outputs.exists == 'true'
         run: terraform validate -no-color
 
       - name: Terraform plan
+        if: matrix.environment == 'network' || steps.network_state.outputs.exists == 'true'
         run: terraform plan -no-color -input=false
+
+      - name: Dev/QA skipped (missing network state)
+        if: matrix.environment != 'network' && steps.network_state.outputs.exists != 'true'
+        run: echo "Skipped because network remote state does not exist yet. Apply network first."
+        shell: bash
 
       - name: Remove ci.auto.tfvars
         if: always() && matrix.environment != 'network'

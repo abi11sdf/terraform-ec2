@@ -13,8 +13,6 @@ permissions:
   pull-requests: write
 
 env:
-  # GitHub Actions: JS actions on Node 20; opt into Node 24 per runner deprecation.
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   TF_VERSION: 1.9.5
   AWS_REGION: us-east-1
   AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
@@ -35,21 +33,21 @@ jobs:
         working-directory: environments/${{ matrix.environment }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Require TF_STATE_BUCKET secret
         run: test -n "${TF_STATE_BUCKET}"
         shell: bash
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-terraform-${{ matrix.environment }}
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false

@@ -16,8 +16,8 @@ env:
   TF_VERSION: 1.9.5
   AWS_REGION: us-east-1
   AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-  # Repository variable (non-secret): exact S3 bucket *name*, not arn:... or s3://
-  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+  # Repository secret: exact S3 bucket *name* (not arn:... or s3://)
+  TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
 
 jobs:
   terraform-plan:
@@ -34,7 +34,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Require TF_STATE_BUCKET variable
+      - name: Require TF_STATE_BUCKET secret
         run: test -n "${TF_STATE_BUCKET}"
         shell: bash
 

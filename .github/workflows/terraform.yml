@@ -16,7 +16,6 @@ env:
   TF_VERSION: 1.9.5
   AWS_REGION: us-east-1
   AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-  # Repository secret: exact S3 bucket *name* (not arn:... or s3://)
   TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
 
 jobs:
@@ -49,6 +48,7 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
 
       - name: Terraform fmt
         run: terraform fmt -check -recursive
@@ -68,20 +68,18 @@ jobs:
             -backend-config="region=${AWS_REGION}"
         shell: bash
 
-      - name: Terraform validate
-        run: |
-          if [ "${{ matrix.environment }}" = "network" ]; then
-            terraform validate -no-color
-          else
-            terraform validate -no-color -var="terraform_state_bucket=${TF_STATE_BUCKET}"
-          fi
+      - name: Write ci.auto.tfvars (dev/qa)
+        if: matrix.environment != 'network'
+        run: printf 'terraform_state_bucket = "%s"\n' "${TF_STATE_BUCKET}" > ci.auto.tfvars
         shell: bash
 
+      - name: Terraform validate
+        run: terraform validate -no-color
+
       - name: Terraform plan
-        run: |
-          if [ "${{ matrix.environment }}" = "network" ]; then
-            terraform plan -no-color -input=false
-          else
-            terraform plan -no-color -input=false -var="terraform_state_bucket=${TF_STATE_BUCKET}"
-          fi
+        run: terraform plan -no-color -input=false
+
+      - name: Remove ci.auto.tfvars
+        if: always() && matrix.environment != 'network'
+        run: rm -f ci.auto.tfvars
         shell: bash

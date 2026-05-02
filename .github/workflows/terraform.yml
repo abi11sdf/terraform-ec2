@@ -16,6 +16,8 @@ env:
   TF_VERSION: 1.9.5
   AWS_REGION: us-east-1
   AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+  # Repository variable (non-secret): exact S3 bucket *name*, not arn:... or s3://
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
 
 jobs:
   terraform-plan:
@@ -31,6 +33,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Require TF_STATE_BUCKET variable
+        run: test -n "${TF_STATE_BUCKET}"
+        shell: bash
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -48,12 +54,34 @@ jobs:
         run: terraform fmt -check -recursive
         working-directory: .
 
-      - name: Terraform init
-        run: terraform init -input=false
+      - name: Terraform init (S3 partial backend)
+        run: |
+          case "${{ matrix.environment }}" in
+            network) STATE_KEY="network/terraform.tfstate" ;;
+            dev)     STATE_KEY="dev/terraform.tfstate" ;;
+            qa)      STATE_KEY="qa/terraform.tfstate" ;;
+            *)       echo "unknown env"; exit 1 ;;
+          esac
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=${STATE_KEY}" \
+            -backend-config="region=${AWS_REGION}"
+        shell: bash
 
       - name: Terraform validate
-        run: terraform validate -no-color
+        run: |
+          if [ "${{ matrix.environment }}" = "network" ]; then
+            terraform validate -no-color
+          else
+            terraform validate -no-color -var="terraform_state_bucket=${TF_STATE_BUCKET}"
+          fi
+        shell: bash
 
       - name: Terraform plan
-        run: terraform plan -no-color -input=false
-        
+        run: |
+          if [ "${{ matrix.environment }}" = "network" ]; then
+            terraform plan -no-color -input=false
+          else
+            terraform plan -no-color -input=false -var="terraform_state_bucket=${TF_STATE_BUCKET}"
+          fi
+        shell: bash

@@ -1,4 +1,4 @@
-name: Terraform
+ame: Terraform
 
 on:
   push:
@@ -99,7 +99,7 @@ jobs:
         run: |
           {
             printf 'terraform_state_bucket = "%s"\n' "${TF_STATE_BUCKET}"
-            [ -n "${TF_NETWORK_STATE_KEY}" ] && printf 'network_state_key = "%s"\n' "${TF_NETWORK_STATE_KEY}"
+            [ -n "${TF_NETWORK_STATE_KEY}" ] && printf 'network_state_key = "%s"\n' "${TF_NETWORK_STATE_KEY}" || true
           } > ci.auto.tfvars
         shell: bash
 
@@ -125,7 +125,7 @@ jobs:
         shell: bash
 
   # ──────────────────────────────────────────────
-  # JOB 2: Apply NETWORK (on push to main only)
+  # JOB 2: Apply NETWORK (push to main only)
   # ──────────────────────────────────────────────
   apply-network:
     name: Apply (network)
@@ -166,7 +166,7 @@ jobs:
         run: terraform apply -auto-approve -no-color -input=false
 
   # ──────────────────────────────────────────────
-  # JOB 3: Apply DEV (after network is applied)
+  # JOB 3: Apply DEV (after network is done)
   # ──────────────────────────────────────────────
   apply-dev:
     name: Apply (dev)
@@ -207,7 +207,7 @@ jobs:
         run: |
           {
             printf 'terraform_state_bucket = "%s"\n' "${TF_STATE_BUCKET}"
-            [ -n "${TF_NETWORK_STATE_KEY}" ] && printf 'network_state_key = "%s"\n' "${TF_NETWORK_STATE_KEY}"
+            [ -n "${TF_NETWORK_STATE_KEY}" ] && printf 'network_state_key = "%s"\n' "${TF_NETWORK_STATE_KEY}" || true
           } > ci.auto.tfvars
         shell: bash
 
@@ -220,7 +220,7 @@ jobs:
         shell: bash
 
   # ──────────────────────────────────────────────
-  # JOB 4: Apply QA (after dev is applied)
+  # JOB 4: Apply QA (after dev is done)
   # ──────────────────────────────────────────────
   apply-qa:
     name: Apply (qa)
@@ -261,7 +261,7 @@ jobs:
         run: |
           {
             printf 'terraform_state_bucket = "%s"\n' "${TF_STATE_BUCKET}"
-            [ -n "${TF_NETWORK_STATE_KEY}" ] && printf 'network_state_key = "%s"\n' "${TF_NETWORK_STATE_KEY}"
+            [ -n "${TF_NETWORK_STATE_KEY}" ] && printf 'network_state_key = "%s"\n' "${TF_NETWORK_STATE_KEY}" || true
           } > ci.auto.tfvars
         shell: bash
 

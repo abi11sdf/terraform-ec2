@@ -1,26 +1,28 @@
 name: Terraform
 
-'on':
+on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
 
-# IAM user access keys do not need OIDC (no id-token).
 permissions:
   contents: read
   pull-requests: write
 
 env:
   TF_VERSION: 1.9.5
-  # Region for AWS CLI/session and S3 *backend* bucket (must match bucket location).
   AWS_REGION: us-east-1
   TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
   TF_NETWORK_STATE_KEY: ${{ secrets.TF_NETWORK_STATE_KEY }}
 
 jobs:
-  terraform-plan:
+
+  # ──────────────────────────────────────────────
+  # JOB 1: Plan ALL environments (runs on every push/PR)
+  # ──────────────────────────────────────────────
+  plan:
     name: Plan (${{ matrix.environment }})
     runs-on: ubuntu-latest
     strategy:
@@ -30,24 +32,24 @@ jobs:
     defaults:
       run:
         working-directory: environments/${{ matrix.environment }}
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Require TF_STATE_BUCKET secret
         run: test -n "${TF_STATE_BUCKET}"
         shell: bash
 
-      # Use a dedicated IAM user in YOUR account; attach least-privilege policy for S3 state + EC2/VPC API.
-      - name: Require AWS access key secrets
+      - name: Require AWS credentials
         run: test -n "${AWS_ACCESS_KEY_ID}" && test -n "${AWS_SECRET_ACCESS_KEY}"
         shell: bash
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
-      - name: Configure AWS credentials (access keys)
-        uses: aws-actions/configure-aws-credentials@v6
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -60,17 +62,17 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      - name: Terraform fmt
+      - name: Terraform fmt check
         run: terraform fmt -check -recursive
         working-directory: .
 
-      - name: Terraform init (S3 partial backend)
+      - name: Terraform init
         run: |
           case "${{ matrix.environment }}" in
             network) STATE_KEY="network/terraform.tfstate" ;;
             dev)     STATE_KEY="dev/terraform.tfstate" ;;
             qa)      STATE_KEY="qa/terraform.tfstate" ;;
-            *)       echo "unknown env"; exit 1 ;;
+            *)       echo "Unknown environment"; exit 1 ;;
           esac
           terraform init -input=false \
             -backend-config="bucket=${TF_STATE_BUCKET}" \
@@ -78,17 +80,17 @@ jobs:
             -backend-config="region=${AWS_REGION}"
         shell: bash
 
-      - name: Check network remote state (dev/qa)
+      - name: Check network remote state (dev/qa only)
         if: matrix.environment != 'network'
         id: network_state
         run: |
           NET_KEY="${TF_NETWORK_STATE_KEY:-network/terraform.tfstate}"
-          echo "Expecting network remote state at s3://${TF_STATE_BUCKET}/${NET_KEY}"
+          echo "Checking s3://${TF_STATE_BUCKET}/${NET_KEY}"
           if aws s3api head-object --bucket "${TF_STATE_BUCKET}" --key "${NET_KEY}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No Terraform state for network at s3://${TF_STATE_BUCKET}/${NET_KEY}. Skipping dev/qa plan until network is applied."
+            echo "::warning::Network state missing. Dev/QA plan skipped."
           fi
         shell: bash
 
@@ -97,9 +99,7 @@ jobs:
         run: |
           {
             printf 'terraform_state_bucket = "%s"\n' "${TF_STATE_BUCKET}"
-            if [ -n "${TF_NETWORK_STATE_KEY}" ]; then
-              printf 'network_state_key = "%s"\n' "${TF_NETWORK_STATE_KEY}"
-            fi
+            [ -n "${TF_NETWORK_STATE_KEY}" ] && printf 'network_state_key = "%s"\n' "${TF_NETWORK_STATE_KEY}"
           } > ci.auto.tfvars
         shell: bash
 
@@ -109,18 +109,166 @@ jobs:
 
       - name: Terraform plan
         if: matrix.environment == 'network' || steps.network_state.outputs.exists == 'true'
-        run: terraform plan -no-color -input=false
+        run: terraform plan -no-color -input=false -out=tfplan
 
-      - name: Terraform apply (ONLY network first)
-        if: matrix.environment == 'network' && github.event_name == 'workflow_dispatch'
-        run: terraform apply -auto-approve -no-color -input=false
-
-      - name: Dev/QA skipped (missing network state)
-        if: matrix.environment != 'network' && steps.network_state.outputs.exists != 'true'
-        run: echo "Skipped because network remote state does not exist yet. Apply network first."
-        shell: bash
+      - name: Upload plan artifact
+        if: matrix.environment == 'network' || steps.network_state.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ matrix.environment }}
+          path: environments/${{ matrix.environment }}/tfplan
+          retention-days: 1
 
       - name: Remove ci.auto.tfvars
         if: always() && matrix.environment != 'network'
+        run: rm -f ci.auto.tfvars
+        shell: bash
+
+  # ──────────────────────────────────────────────
+  # JOB 2: Apply NETWORK (on push to main only)
+  # ──────────────────────────────────────────────
+  apply-network:
+    name: Apply (network)
+    needs: plan
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    defaults:
+      run:
+        working-directory: environments/network
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=network/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}"
+        shell: bash
+
+      - name: Terraform apply network
+        run: terraform apply -auto-approve -no-color -input=false
+
+  # ──────────────────────────────────────────────
+  # JOB 3: Apply DEV (after network is applied)
+  # ──────────────────────────────────────────────
+  apply-dev:
+    name: Apply (dev)
+    needs: apply-network
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    defaults:
+      run:
+        working-directory: environments/dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=dev/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}"
+        shell: bash
+
+      - name: Write ci.auto.tfvars
+        run: |
+          {
+            printf 'terraform_state_bucket = "%s"\n' "${TF_STATE_BUCKET}"
+            [ -n "${TF_NETWORK_STATE_KEY}" ] && printf 'network_state_key = "%s"\n' "${TF_NETWORK_STATE_KEY}"
+          } > ci.auto.tfvars
+        shell: bash
+
+      - name: Terraform apply dev
+        run: terraform apply -auto-approve -no-color -input=false
+
+      - name: Remove ci.auto.tfvars
+        if: always()
+        run: rm -f ci.auto.tfvars
+        shell: bash
+
+  # ──────────────────────────────────────────────
+  # JOB 4: Apply QA (after dev is applied)
+  # ──────────────────────────────────────────────
+  apply-qa:
+    name: Apply (qa)
+    needs: apply-dev
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    defaults:
+      run:
+        working-directory: environments/qa
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=qa/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}"
+        shell: bash
+
+      - name: Write ci.auto.tfvars
+        run: |
+          {
+            printf 'terraform_state_bucket = "%s"\n' "${TF_STATE_BUCKET}"
+            [ -n "${TF_NETWORK_STATE_KEY}" ] && printf 'network_state_key = "%s"\n' "${TF_NETWORK_STATE_KEY}"
+          } > ci.auto.tfvars
+        shell: bash
+
+      - name: Terraform apply qa
+        run: terraform apply -auto-approve -no-color -input=false
+
+      - name: Remove ci.auto.tfvars
+        if: always()
         run: rm -f ci.auto.tfvars
         shell: bash

@@ -1,4 +1,4 @@
-    output "instance_id" {
+output "instance_id" {
   value = module.ec2.instance_id
 }
 
@@ -17,4 +17,3 @@ output "vpc_id" {
 output "shared_security_group_id" {
   value = data.terraform_remote_state.network.outputs.shared_security_group_id
 }
-

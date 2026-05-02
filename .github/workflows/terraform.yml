@@ -20,7 +20,7 @@ env:
 jobs:
 
   # ──────────────────────────────────────────────
-  # JOB 1: Plan ALL environments (runs on every push/PR)
+  # JOB 1: Plan ALL environments
   # ──────────────────────────────────────────────
   plan:
     name: Plan (${{ matrix.environment }})
@@ -84,7 +84,8 @@ jobs:
         if: matrix.environment != 'network'
         id: network_state
         run: |
-          NET_KEY="${TF_NETWORK_STATE_KEY:-network/terraform.tfstate}"
+          NET_KEY=$(echo "${TF_NETWORK_STATE_KEY}" | tr -d '\n\r\t ')
+          NET_KEY="${NET_KEY:-network/terraform.tfstate}"
           echo "Checking s3://${TF_STATE_BUCKET}/${NET_KEY}"
           if aws s3api head-object --bucket "${TF_STATE_BUCKET}" --key "${NET_KEY}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
@@ -97,10 +98,11 @@ jobs:
       - name: Write ci.auto.tfvars (dev/qa)
         if: matrix.environment != 'network' && steps.network_state.outputs.exists == 'true'
         run: |
-          {
-            printf 'terraform_state_bucket = "%s"\n' "${TF_STATE_BUCKET}"
-            [ -n "${TF_NETWORK_STATE_KEY}" ] && printf 'network_state_key = "%s"\n' "${TF_NETWORK_STATE_KEY}" || true
-          } > ci.auto.tfvars
+          NET_KEY=$(echo "${TF_NETWORK_STATE_KEY}" | tr -d '\n\r\t ')
+          NET_KEY="${NET_KEY:-network/terraform.tfstate}"
+          BUCKET=$(echo "${TF_STATE_BUCKET}" | tr -d '\n\r\t ')
+          printf 'terraform_state_bucket = "%s"\n' "${BUCKET}" > ci.auto.tfvars
+          printf 'network_state_key = "%s"\n' "${NET_KEY}" >> ci.auto.tfvars
         shell: bash
 
       - name: Terraform validate
@@ -125,7 +127,7 @@ jobs:
         shell: bash
 
   # ──────────────────────────────────────────────
-  # JOB 2: Apply NETWORK (push to main only)
+  # JOB 2: Apply NETWORK
   # ──────────────────────────────────────────────
   apply-network:
     name: Apply (network)
@@ -166,7 +168,7 @@ jobs:
         run: terraform apply -auto-approve -no-color -input=false
 
   # ──────────────────────────────────────────────
-  # JOB 3: Apply DEV (after network is done)
+  # JOB 3: Apply DEV
   # ──────────────────────────────────────────────
   apply-dev:
     name: Apply (dev)
@@ -205,10 +207,11 @@ jobs:
 
       - name: Write ci.auto.tfvars
         run: |
-          {
-            printf 'terraform_state_bucket = "%s"\n' "${TF_STATE_BUCKET}"
-            [ -n "${TF_NETWORK_STATE_KEY}" ] && printf 'network_state_key = "%s"\n' "${TF_NETWORK_STATE_KEY}" || true
-          } > ci.auto.tfvars
+          NET_KEY=$(echo "${TF_NETWORK_STATE_KEY}" | tr -d '\n\r\t ')
+          NET_KEY="${NET_KEY:-network/terraform.tfstate}"
+          BUCKET=$(echo "${TF_STATE_BUCKET}" | tr -d '\n\r\t ')
+          printf 'terraform_state_bucket = "%s"\n' "${BUCKET}" > ci.auto.tfvars
+          printf 'network_state_key = "%s"\n' "${NET_KEY}" >> ci.auto.tfvars
         shell: bash
 
       - name: Terraform apply dev
@@ -220,7 +223,7 @@ jobs:
         shell: bash
 
   # ──────────────────────────────────────────────
-  # JOB 4: Apply QA (after dev is done)
+  # JOB 4: Apply QA
   # ──────────────────────────────────────────────
   apply-qa:
     name: Apply (qa)
@@ -259,10 +262,11 @@ jobs:
 
       - name: Write ci.auto.tfvars
         run: |
-          {
-            printf 'terraform_state_bucket = "%s"\n' "${TF_STATE_BUCKET}"
-            [ -n "${TF_NETWORK_STATE_KEY}" ] && printf 'network_state_key = "%s"\n' "${TF_NETWORK_STATE_KEY}" || true
-          } > ci.auto.tfvars
+          NET_KEY=$(echo "${TF_NETWORK_STATE_KEY}" | tr -d '\n\r\t ')
+          NET_KEY="${NET_KEY:-network/terraform.tfstate}"
+          BUCKET=$(echo "${TF_STATE_BUCKET}" | tr -d '\n\r\t ')
+          printf 'terraform_state_bucket = "%s"\n' "${BUCKET}" > ci.auto.tfvars
+          printf 'network_state_key = "%s"\n' "${NET_KEY}" >> ci.auto.tfvars
         shell: bash
 
       - name: Terraform apply qa
